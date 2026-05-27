@@ -75,8 +75,8 @@ const NEW_CHAPTER_FILES = new Set<string>([
   "docs/29-Bridge-IPC-与远程会话.md",
   "docs/30-DirectConnect-与上游代理.md",
   "docs/31-Keybindings-Vim-与-Voice-输入.md",
+  "docs/32-Buddy-人格.md",
   "docs/33-Doctor-屏与-Output-Style-体验.md",
-  // C29（Buddy 人格）的 NN（预留 32）在其 issue 启动时由 OC-Dev 追加。
 ]);
 
 const SOURCE_LANGS = new Set([
