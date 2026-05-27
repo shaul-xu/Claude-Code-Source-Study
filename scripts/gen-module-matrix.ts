@@ -202,14 +202,18 @@ const md = [
   `|---|---|`,
   ...allTopDirs.map(
     (d) =>
-      `| \`${d}/\` | ${dirToChapters[d].length ? dirToChapters[d].join(", ") : "—（孤儿或入白名单）"} |`,
+      `| \`${d}/\` | ${dirToChapters[d].length ? dirToChapters[d].join(", ") : "—"} |`,
   ),
   ``,
   `## 孤儿目录`,
   ``,
   orphans.length === 0
-    ? `当前 commit 下无孤儿目录（白名单：${allowlist.size} 项）。`
+    ? `当前 commit 下 orphans=0（孤儿统计已剔除 \`scripts/orphan-allowlist.txt\` 中的条目）。`
     : `孤儿目录 ${orphans.length} 个：${orphans.map((d) => `\`${d}/\``).join(", ")}`,
+  ``,
+  `白名单（\`scripts/orphan-allowlist.txt\`）共 ${allowlist.size} 项：${Array.from(allowlist).sort().map((d) => `\`${d}/\``).join(", ")}。`,
+  ``,
+  `> 说明：反查表里的 \`—\` 标记**任何未被 v2 章节直接覆盖的一级目录**（即 \`reverse_index[dir]\` 为空），与是否在白名单无关。孤儿统计（\`orphans\`）= 出现 \`—\` 的目录集合再剔除 \`scripts/orphan-allowlist.txt\` 中的条目。白名单中如 \`utils/\` 等条目实际被章节叙事覆盖，反查表里仍显示具体章号，并不出现 \`—\`——这属于"白名单兜底但实际不需要兜底"，不算矛盾。`,
   ``,
 ].join("\n");
 

@@ -179,14 +179,66 @@ for (const f of promptFiles) {
   // 该 export 名在 builtInAgents.ts 出现的行号，用于副表回链
   const indexLine = lineOf(exportName);
 
-  // displayName：源码里没有独立字段；取 prompt 文件首句作为可读名兜底，
-  // 优先使用 whenToUse 的首小句；最后退到 agentType。
-  let displayName = agentType;
-  const whenToUseMatch = src.match(/whenToUse\s*:\s*['"`]([^'"`]+)['"`]/);
-  if (whenToUseMatch) {
-    // 截取第一个中英文句号 / 感叹号 / 问号前
-    const s = whenToUseMatch[1].split(/[.。!?！？]/)[0].trim();
-    if (s) displayName = s.slice(0, 80);
+  // whenToUse：源码 `BuiltInAgentDefinition` 没有独立 displayName 字段；
+  // 直接取 whenToUse 全文作为速查表的可读描述（不再截断，避免 OC-R 在 PR1 中
+  // 指出的 `claude-code-guide` 在 `Claude...` 处截断的问题）。
+  let whenToUseSummary = "";
+  let whenToUseRaw: string | undefined;
+  // 必须匹配同种引号才能闭合（OC-R 在 PR1 review 中指出 `claude-code-guide` 与
+  // `statusline-setup` 的截断 bug：之前用 `['"`]` 三种引号互通闭合，
+  // 会被 `("Can Claude...` 或 `user's` 提前截断）。
+  const literalM =
+    src.match(/whenToUse\s*:\s*`([\s\S]*?)`/) ||
+    src.match(/whenToUse\s*:\s*"((?:\\.|[^"\\])*)"/) ||
+    src.match(/whenToUse\s*:\s*'((?:\\.|[^'\\])*)'/);
+  if (literalM) {
+    whenToUseRaw = literalM[1];
+  } else {
+    const refM = src.match(/whenToUse\s*:\s*([A-Z_][A-Z0-9_]*)\b/);
+    if (refM) {
+      const constName = refM[1];
+      const constDefBacktickRe = new RegExp(
+        `\\b(?:export\\s+)?const\\s+${constName}\\s*(?::\\s*[^=]+)?=\\s*\`([\\s\\S]*?)\``,
+      );
+      const constDefDQRe = new RegExp(
+        `\\b(?:export\\s+)?const\\s+${constName}\\s*(?::\\s*[^=]+)?=\\s*"((?:\\\\.|[^"\\\\])*)"`,
+      );
+      const constDefSQRe = new RegExp(
+        `\\b(?:export\\s+)?const\\s+${constName}\\s*(?::\\s*[^=]+)?=\\s*'((?:\\\\.|[^'\\\\])*)'`,
+      );
+      const here =
+        src.match(constDefBacktickRe) ||
+        src.match(constDefDQRe) ||
+        src.match(constDefSQRe);
+      if (here) {
+        whenToUseRaw = here[1];
+      } else {
+        // 在 built-in/ 目录其它文件里找
+        for (const sibling of promptFiles) {
+          if (sibling === f) continue;
+          const siblingSrc = readFileSync(join(builtInDir, sibling), "utf8");
+          const sm =
+            siblingSrc.match(constDefBacktickRe) ||
+            siblingSrc.match(constDefDQRe) ||
+            siblingSrc.match(constDefSQRe);
+          if (sm) {
+            whenToUseRaw = sm[1];
+            break;
+          }
+        }
+      }
+    }
+  }
+  if (whenToUseRaw) {
+    // 完整保留 whenToUse 文本（折叠空白即可）。源码里多数句子里就含 `.`、`...`、引号，
+    // 简单 split('.') 会把 `Use this agent when the user asks questions ("Can Claude...", ...)`
+    // 在 `Claude` 处截断——OC-R 已经在 PR1 review 中点名这个问题，必须保留全文。
+    // Markdown 表格单元里禁止裸 `|`、`\n`、`<br>` 等会破表，统一转义。
+    whenToUseSummary = whenToUseRaw
+      .replace(/\r?\n/g, " ")
+      .replace(/\s+/g, " ")
+      .replace(/\|/g, "\\|")
+      .trim();
   }
 
   const sourceFiles = [
@@ -200,9 +252,10 @@ for (const f of promptFiles) {
     name: agentType,
     category: "built-in-agent",
     source_files: sourceFiles,
-    // §7.5 正表四字段
+    // §7.5 正表四字段（注意：源码 `BuiltInAgentDefinition` 没有 displayName 字段，
+    // 这里用 whenToUse 首句节选作为可读描述列）
     id: agentType,
-    displayName,
+    whenToUseSummary,
     modelHint,
     defaultEnabled: effects.defaultEnabled,
     // §7.5 副表
@@ -244,11 +297,11 @@ const md = [
   ``,
   `**正表**：源码定义 ${items.length} 个内置 agent（位于 \`${builtInRel}/\`）。`,
   ``,
-  `| id | displayName | modelHint | defaultEnabled | 来源 |`,
+  `| id | whenToUse（源码原文，未截断） | modelHint | defaultEnabled | 来源 |`,
   `|---|---|---|---|---|`,
   ...items.map(
     (i) =>
-      `| \`${i.id}\` | ${(i as ManifestItem & { displayName?: string }).displayName ?? ""} | \`${(i as ManifestItem & { modelHint?: string }).modelHint ?? ""}\` | ${(i as ManifestItem & { defaultEnabled?: boolean }).defaultEnabled} | ${(i.source_files ?? []).map((s) => `\`${s}\``).join(", ")} |`,
+      `| \`${i.id}\` | ${(i as ManifestItem & { whenToUseSummary?: string }).whenToUseSummary ?? ""} | \`${(i as ManifestItem & { modelHint?: string }).modelHint ?? ""}\` | ${(i as ManifestItem & { defaultEnabled?: boolean }).defaultEnabled} | ${(i.source_files ?? []).map((s) => `\`${s}\``).join(", ")} |`,
   ),
   ``,
   `**副表**（运行时可用集合受三类变量影响，见 \`${indexRel}\`）：`,

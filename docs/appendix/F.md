@@ -46,14 +46,14 @@
 | 一级目录 | 覆盖章节 |
 |---|---|
 | `assistant/` | C31 |
-| `bootstrap/` | —（孤儿或入白名单） |
+| `bootstrap/` | — |
 | `bridge/` | C19, C24, C33 |
 | `buddy/` | C29 |
 | `cli/` | C23 |
 | `commands/` | C09, C14, C24, C28, C30, C32 |
 | `components/` | C27 |
 | `constants/` | C06, C22 |
-| `context/` | —（孤儿或入白名单） |
+| `context/` | — |
 | `coordinator/` | C17 |
 | `entrypoints/` | C01, C02 |
 | `hooks/` | C17, C19, C20, C25, C28 |
@@ -61,7 +61,7 @@
 | `keybindings/` | C28 |
 | `memdir/` | C31 |
 | `migrations/` | C04 |
-| `moreright/` | —（孤儿或入白名单） |
+| `moreright/` | — |
 | `native-ts/` | C26 |
 | `outputStyles/` | C06, C21, C30 |
 | `plugins/` | C21 |
@@ -75,7 +75,7 @@
 | `state/` | C33 |
 | `tasks/` | C16 |
 | `tools/` | C10, C11, C12, C13, C14, C15, C16, C17, C18 |
-| `types/` | —（孤儿或入白名单） |
+| `types/` | — |
 | `upstreamproxy/` | C25 |
 | `utils/` | C03, C22 |
 | `vim/` | C28 |
@@ -83,4 +83,8 @@
 
 ## 孤儿目录
 
-当前 commit 下无孤儿目录（白名单：5 项）。
+当前 commit 下 orphans=0（孤儿统计已剔除 `scripts/orphan-allowlist.txt` 中的条目）。
+
+白名单（`scripts/orphan-allowlist.txt`）共 5 项：`bootstrap/`, `context/`, `moreright/`, `types/`, `utils/`。
+
+> 说明：反查表里的 `—` 标记**任何未被成书章节直接覆盖的一级目录**（即 `reverse_index[dir]` 为空），与是否在白名单无关。孤儿统计（`orphans`）= 出现 `—` 的目录集合再剔除 `scripts/orphan-allowlist.txt` 中的条目。白名单中如 `utils/` 等条目实际被章节叙事覆盖，反查表里仍显示具体章号，并不出现 `—`——这属于"白名单兜底但实际不需要兜底"，不算矛盾。

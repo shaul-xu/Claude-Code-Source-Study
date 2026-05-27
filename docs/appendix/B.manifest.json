@@ -814,6 +814,17 @@
     "top_level_directories": 86,
     "top_level_files": 15,
     "total_top_level": 101,
-    "runtime_referenced_in_commands_ts": 3
+    "static_imported_dirs_in_commands_ts": 82,
+    "static_imported_files_in_commands_ts": 10,
+    "dynamically_required_dirs_in_commands_ts": 3,
+    "dynamically_required_files_in_commands_ts": 6,
+    "dynamically_required_dirs_only": [
+      "bridge",
+      "remote-setup",
+      "voice"
+    ],
+    "dirs_not_referenced_in_commands_ts": [
+      "review"
+    ]
   }
 }

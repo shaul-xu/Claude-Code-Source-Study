@@ -5,7 +5,11 @@
 - 一级目录：86
 - 一级文件：15
 - 一级条目合计：101
-- `commands.ts` 中静态引用到的目录：3（仅作粗略 runtime 估算）
+- `commands.ts` 中静态 `import` 引用的一级**目录**：82
+- `commands.ts` 中静态 `import` 引用的一级**文件**：10
+- `commands.ts` 中条件 `require` 装载的一级**目录**：3（其中 3 个仅以 require 形态装载）
+- `commands.ts` 中条件 `require` 装载的一级**文件**：6
+- 未被 `commands.ts` 任意 import/require 引用的一级目录：1（`review`；可能通过 plugin 注册或为遗留目录）
 
 ## 一级目录
 
@@ -117,3 +121,11 @@
 | `statusline` | `commands/statusline.tsx` |
 | `ultraplan` | `commands/ultraplan.tsx` |
 | `version` | `commands/version.ts` |
+
+## 条件 require 装载的目录（3）
+
+| 名称 | 路径 |
+|---|---|
+| `bridge` | `commands/bridge/` |
+| `remote-setup` | `commands/remote-setup/` |
+| `voice` | `commands/voice/` |

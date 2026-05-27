@@ -54,14 +54,48 @@ for (const f of topFiles) {
   });
 }
 
-// runtime 命令：commands.ts 中常见聚合形态。粗粒度扫描——只为给出 runtime 计数。
+// runtime 命令：commands.ts 中常见聚合形态。粗粒度扫描——给出静态/动态装载计数。
 const cmdsTs = readFileSync(join(sourcePath, "commands.ts"), "utf8");
-const runtimeRefs = new Set<string>();
-// 形如 `import { fooCommand } from './commands/foo/...'`
-const runtimeImportRe =
-  /import\s+\{[^}]+\}\s+from\s+['"]\.\/commands\/([A-Za-z0-9_-]+)/g;
+const dirSet = new Set(dirs);
+// 静态 import 的两种形态：
+//   - 目录引用：`from './commands/<dir>/...'`（必须以 / 结尾后跟更多路径段）
+//   - 单文件引用：`from './commands/<file>.ts(x)'` 或 `'./commands/<file>.js'`
+// 二者口径分开统计，避免把 `commands/commit.js` 当成目录。
+const staticDirRefs = new Set<string>();
+const staticFileRefs = new Set<string>();
+const dynamicDirRefs = new Set<string>();
+const dynamicFileRefs = new Set<string>();
+// 目录 import：`from './commands/<name>/...'` —— 必须有结尾的 `/` 才算目录。
+const staticDirImportRe =
+  /import\s+(?:[^'";]+?\s+from\s+)?['"]\.\/commands\/([A-Za-z0-9_-]+)\//g;
+// 单文件 import：`from './commands/<name>.tsx?|.js'`（注意排除 `.../<name>/...` 形态）。
+const staticFileImportRe =
+  /import\s+(?:[^'";]+?\s+from\s+)?['"]\.\/commands\/([A-Za-z0-9_-]+)\.(?:ts|tsx|js|jsx)['"]/g;
+// 动态 require 同样区分目录/文件两种形态。
+const dynamicDirRequireRe =
+  /require\(\s*['"]\.\/commands\/([A-Za-z0-9_-]+)\//g;
+const dynamicFileRequireRe =
+  /require\(\s*['"]\.\/commands\/([A-Za-z0-9_-]+)\.(?:ts|tsx|js|jsx)['"]/g;
 let m: RegExpExecArray | null;
-while ((m = runtimeImportRe.exec(cmdsTs)) !== null) runtimeRefs.add(m[1]);
+while ((m = staticDirImportRe.exec(cmdsTs)) !== null) staticDirRefs.add(m[1]);
+while ((m = staticFileImportRe.exec(cmdsTs)) !== null) staticFileRefs.add(m[1]);
+while ((m = dynamicDirRequireRe.exec(cmdsTs)) !== null) dynamicDirRefs.add(m[1]);
+while ((m = dynamicFileRequireRe.exec(cmdsTs)) !== null) dynamicFileRefs.add(m[1]);
+// 与 `dirs` 求交集，保证 staticDirRefs 只数真实存在的一级目录。
+const staticDirRefsExisting = new Set(
+  Array.from(staticDirRefs).filter((d) => dirSet.has(d)),
+);
+const dynamicDirRefsExisting = new Set(
+  Array.from(dynamicDirRefs).filter((d) => dirSet.has(d)),
+);
+// 仅在 require 出现、import 未出现的目录算 "纯动态装载"。
+const dynamicOnly = new Set(
+  Array.from(dynamicDirRefsExisting).filter((d) => !staticDirRefsExisting.has(d)),
+);
+// 一级目录中未在 commands.ts 任意 import/require 中出现的：可能由 plugin 注册或为遗留目录。
+const unreferencedDirs = dirs.filter(
+  (d) => !staticDirRefsExisting.has(d) && !dynamicDirRefsExisting.has(d),
+);
 
 const manifest = {
   source_commit: sourceCommit,
@@ -70,7 +104,12 @@ const manifest = {
     top_level_directories: dirs.length,
     top_level_files: topFiles.length,
     total_top_level: dirs.length + topFiles.length,
-    runtime_referenced_in_commands_ts: runtimeRefs.size,
+    static_imported_dirs_in_commands_ts: staticDirRefsExisting.size,
+    static_imported_files_in_commands_ts: staticFileRefs.size,
+    dynamically_required_dirs_in_commands_ts: dynamicDirRefsExisting.size,
+    dynamically_required_files_in_commands_ts: dynamicFileRefs.size,
+    dynamically_required_dirs_only: Array.from(dynamicOnly).sort(),
+    dirs_not_referenced_in_commands_ts: unreferencedDirs,
   },
 };
 
@@ -86,7 +125,11 @@ const md = [
   `- 一级目录：${dirs.length}`,
   `- 一级文件：${topFiles.length}`,
   `- 一级条目合计：${dirs.length + topFiles.length}`,
-  `- \`commands.ts\` 中静态引用到的目录：${runtimeRefs.size}（仅作粗略 runtime 估算）`,
+  `- \`commands.ts\` 中静态 \`import\` 引用的一级**目录**：${staticDirRefsExisting.size}`,
+  `- \`commands.ts\` 中静态 \`import\` 引用的一级**文件**：${staticFileRefs.size}`,
+  `- \`commands.ts\` 中条件 \`require\` 装载的一级**目录**：${dynamicDirRefsExisting.size}（其中 ${dynamicOnly.size} 个仅以 require 形态装载）`,
+  `- \`commands.ts\` 中条件 \`require\` 装载的一级**文件**：${dynamicFileRefs.size}`,
+  `- 未被 \`commands.ts\` 任意 import/require 引用的一级目录：${unreferencedDirs.length}${unreferencedDirs.length ? `（${unreferencedDirs.map((d) => `\`${d}\``).join(", ")}；可能通过 plugin 注册或为遗留目录）` : ""}`,
   ``,
   `## 一级目录`,
   ``,
@@ -99,6 +142,18 @@ const md = [
   `| 名称 | 路径 |`,
   `|---|---|`,
   ...topFiles.map((f) => `| \`${f.replace(/\.tsx?$/, "")}\` | \`commands/${f}\` |`),
+  ``,
+  `## 条件 require 装载的目录（${dynamicOnly.size}）`,
+  ``,
+  dynamicOnly.size === 0
+    ? `无：所有 \`require('./commands/...')\` 调用涉及的目录都同时被静态 \`import\` 引用。`
+    : [
+        `| 名称 | 路径 |`,
+        `|---|---|`,
+        ...Array.from(dynamicOnly)
+          .sort()
+          .map((d) => `| \`${d}\` | \`commands/${d}/\` |`),
+      ].join("\n"),
   ``,
 ].join("\n");
 

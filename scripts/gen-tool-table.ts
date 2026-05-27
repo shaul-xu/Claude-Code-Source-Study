@@ -52,37 +52,34 @@ const allToolMentions = new Set<string>();
 let m: RegExpExecArray | null;
 while ((m = toolNameRe.exec(toolsTs)) !== null) allToolMentions.add(m[1]);
 
-// 识别 feature-gated 工具：扫描 tools.ts 中的"条件 require"块。
-// 用按 `const NAME =` 起的语句切片，再判断该语句中是否同时含 (gate, require, ToolName)。
-// 同时记录该语句在 tools.ts 中的起止行号，用于生成 path:line-line。
+// 识别 feature-gated 工具：扫描 tools.ts 中所有 `require('./tools/<Dir>/<File>.js').XxxTool`，
+// 并判断该 require 的语句段内是否含 gate 关键字 (`feature(...)`、`process.env.*`、
+// `getFeatureValue_*`)。同时记录该语句在 tools.ts 中的起止行号。
 type GateInfo = { start: number; end: number };
 const featureGatedNames = new Map<string, GateInfo>();
 {
-  // 按 `^const NAME =` 切片，但保留每片在原文中的起始字符偏移以便算行号。
-  const splitRe = /^(?=const\s+[A-Za-z])/m;
-  // RegExp.split 丢偏移，所以手工扫一次。
+  // 切片：以行首 `const NAME =` 为段起点（覆盖 `const X = feature(...) ? require(...).Y : null`
+  // 及 `const xs = feature(...) ? [require(...).A, require(...).B] : []` 两种形态）。
   const heads: number[] = [];
   const lineHeadRe = /^const\s+[A-Za-z]/gm;
   let mm: RegExpExecArray | null;
   while ((mm = lineHeadRe.exec(toolsTs)) !== null) heads.push(mm.index);
   heads.push(toolsTs.length);
-  const gateRe = /feature\(|process\.env\.|getFeatureValue_/;
-  const reqToolRe = /([A-Z][A-Za-z0-9]+Tool)/g;
+  const gateRe = /\bfeature\(|\bprocess\.env\.|\bgetFeatureValue_/;
+  // require('./tools/<dir>/<file>.js').XxxTool —— 直接捕获工具名（属性访问位置）。
+  const reqToolRe =
+    /require\(\s*['"]\.\/tools\/[^'"]+['"]\s*\)\s*\.\s*([A-Z][A-Za-z0-9]+Tool)\b/g;
   for (let i = 0; i < heads.length - 1; i++) {
     const seg = toolsTs.slice(heads[i], heads[i + 1]);
     if (!gateRe.test(seg)) continue;
     const startLine = toolsTs.slice(0, heads[i]).split("\n").length;
-    // 段末（去掉尾随空行）
     const segTrim = seg.replace(/\s*$/, "");
     const endLine =
       toolsTs.slice(0, heads[i] + segTrim.length).split("\n").length;
     let tm: RegExpExecArray | null;
+    reqToolRe.lastIndex = 0;
     while ((tm = reqToolRe.exec(seg)) !== null) {
-      // 仅记录 require(...).XxxTool 形态；避免把变量名（const FooTool = ...）当工具。
-      const around = seg.slice(Math.max(0, tm.index - 30), tm.index);
-      if (/require\(['"][^'"]+['"]\)\.$/.test(around)) {
-        featureGatedNames.set(tm[1], { start: startLine, end: endLine });
-      }
+      featureGatedNames.set(tm[1], { start: startLine, end: endLine });
     }
   }
 }
@@ -173,55 +170,84 @@ function sourceFilesForToolsTsOnly(name: string): string[] {
   return out;
 }
 
-// 整合
-const items: ManifestItem[] = [];
+// 整合：采用正交两维口径，避免 OC-R 在 PR1 review 中点名的 family/leaf/feature-gated
+// 三选一互斥引发的歧义（feature-gated 工具也可能有 tools/<Dir>/ 顶层目录）。
+//   - family    ：bool，是否在 tools/ 下有同名顶层目录。
+//   - register  ：枚举（"default" | "feature-gated" | "—"）—— tools.ts 中的装载路径。
+type Register = "default" | "feature-gated" | "—";
+type Row = {
+  name: string;
+  family: boolean;
+  register: Register;
+  source_files: string[];
+  notes: string;
+};
+const rows: Row[] = [];
 
-// family：所有 tools/ 顶层目录（即便未在 tools.ts 默认装载，也算 family 收录）。
-for (const dir of familyDirs) {
-  const asTool = dir; // 目录名通常即工具名
-  if (featureGatedNames.has(asTool)) {
-    items.push({
-      name: asTool,
-      category: "feature-gated",
-      source_files: sourceFilesForFamilyDir(dir, asTool),
-      notes: "tools.ts 中按 feature flag / 环境变量条件装载",
-    });
-  } else if (defaultLeafLines.has(asTool)) {
-    items.push({
-      name: asTool,
-      category: "leaf",
-      source_files: sourceFilesForFamilyDir(dir, asTool),
-      notes: "tools.ts 默认 register 的运行期叶子工具",
-    });
-  } else {
-    items.push({
-      name: asTool,
-      category: "family",
-      source_files: sourceFilesForFamilyDir(dir, asTool),
-      notes:
-        "tools/ 目录存在；运行期是否装载受 tools.ts 中 feature/coordinator/SDK 条件影响",
-    });
-  }
+function registerOf(name: string): Register {
+  if (featureGatedNames.has(name)) return "feature-gated";
+  if (defaultLeafLines.has(name)) return "default";
+  return "—";
 }
 
-// 把 tools.ts 中提到但 tools/ 下没有同名目录的工具也补进来（如 ExitPlanModeV2Tool）。
-for (const name of allToolMentions) {
-  if (items.find((it) => it.name === name)) continue;
-  if (familyDirs.includes(name)) continue;
-  const cat = featureGatedNames.has(name)
-    ? "feature-gated"
-    : defaultLeafLines.has(name)
-    ? "leaf"
-    : "leaf";
-  items.push({
+function noteOf(family: boolean, reg: Register): string {
+  const fam = family
+    ? "family=tools/ 下有顶层同名目录"
+    : "family=否（仅 tools.ts 内引用）";
+  const r =
+    reg === "default"
+      ? "register=tools.ts 顶部 `import` 默认装载"
+      : reg === "feature-gated"
+      ? "register=tools.ts 中 feature/env/coordinator 条件装载"
+      : "register=未在 tools.ts 中检测到装载（可能由 coordinator/SDK 子集另行注入）";
+  return `${fam}；${r}`;
+}
+
+// family 行：所有 tools/ 顶层目录（family=true）。
+for (const dir of familyDirs) {
+  const name = dir;
+  const reg = registerOf(name);
+  rows.push({
     name,
-    category: cat,
-    source_files: sourceFilesForToolsTsOnly(name),
-    notes: "由 tools.ts 引用、未独占 tools/ 顶层目录",
+    family: true,
+    register: reg,
+    source_files: sourceFilesForFamilyDir(dir, name),
+    notes: noteOf(true, reg),
   });
 }
 
-items.sort((a, b) => a.name.localeCompare(b.name));
+// 把 tools.ts 中提到但 tools/ 下没有同名目录的工具补进来（family=false）。
+for (const name of allToolMentions) {
+  if (rows.find((r) => r.name === name)) continue;
+  if (familyDirs.includes(name)) continue;
+  const reg = registerOf(name);
+  rows.push({
+    name,
+    family: false,
+    register: reg,
+    source_files: sourceFilesForToolsTsOnly(name),
+    notes: noteOf(false, reg),
+  });
+}
+
+rows.sort((a, b) => a.name.localeCompare(b.name));
+
+const items: ManifestItem[] = rows.map((r) => ({
+  name: r.name,
+  category: r.family
+    ? r.register === "feature-gated"
+      ? "family+feature-gated"
+      : r.register === "default"
+      ? "family+default"
+      : "family"
+    : r.register === "feature-gated"
+    ? "feature-gated"
+    : r.register === "default"
+    ? "leaf"
+    : "—",
+  source_files: r.source_files,
+  notes: r.notes,
+}));
 
 const manifest = {
   source_commit: sourceCommit,
@@ -232,27 +258,30 @@ const manifestPath = "docs/appendix/A.manifest.json";
 const prev = readManifest(manifestPath);
 writeManifest(manifestPath, manifest);
 
-const familyCount = items.filter((i) => i.category === "family").length;
-const leafCount = items.filter((i) => i.category === "leaf").length;
-const fgCount = items.filter((i) => i.category === "feature-gated").length;
+const familyCount = rows.filter((r) => r.family).length;
+const defaultRegisterCount = rows.filter((r) => r.register === "default").length;
+const fgCount = rows.filter((r) => r.register === "feature-gated").length;
+const noRegisterCount = rows.filter((r) => r.register === "—").length;
 
 const md = [
   `# 附录 A · 工具速查表`,
   ``,
   `> 生成脚本：\`scripts/gen-tool-table.ts\`；source_commit: \`${sourceCommit}\``,
   ``,
-  `三列模型：`,
-  `- **family**：\`tools/\` 下作为顶层目录出现（${familyCount} 项）`,
-  `- **leaf**：\`tools.ts\` 默认 register 的运行期叶子工具（${leafCount} 项）`,
-  `- **feature-gated**：受 \`feature(...)\` / 环境变量条件装载（${fgCount} 项）`,
+  `正交两维口径（family 与 register 互不强制）：`,
+  `- **family**：是否在 \`tools/\` 下有同名顶层目录。共 **${familyCount}** 项 family（不含 \`shared/\`、\`testing/\`），**${rows.length - familyCount}** 项仅在 \`tools.ts\` 内被引用。`,
+  `- **register**：\`tools.ts\` 中的装载路径。`,
+  `  - \`default\`：顶部 \`import\` 默认装载，共 **${defaultRegisterCount}** 项。`,
+  `  - \`feature-gated\`：受 \`feature(...)\` / \`process.env.*\` / \`getFeatureValue_*\` 条件装载，共 **${fgCount}** 项。`,
+  `  - \`—\`：未在 \`tools.ts\` 中检测到装载（多为 \`family-only\`：tools/ 目录存在但运行期由 coordinator/SDK 子集另行注入），共 **${noRegisterCount}** 项。`,
   ``,
-  `合计 ${items.length} 项。`,
+  `合计 ${rows.length} 项。`,
   ``,
-  `| 名称 | 分类 | 源码位置 (path:line-line) | 说明 |`,
-  `|---|---|---|---|`,
-  ...items.map(
-    (i) =>
-      `| \`${i.name}\` | ${i.category} | ${(i.source_files ?? []).map((s) => `\`${s}\``).join(", ")} | ${i.notes ?? ""} |`,
+  `| 名称 | family | register | 源码位置 (path:line-line) | 说明 |`,
+  `|---|---|---|---|---|`,
+  ...rows.map(
+    (r) =>
+      `| \`${r.name}\` | ${r.family ? "✓" : "—"} | ${r.register} | ${r.source_files.map((s) => `\`${s}\``).join(", ")} | ${r.notes} |`,
   ),
   ``,
 ].join("\n");
@@ -261,5 +290,5 @@ writeFile("docs/appendix/A.md", md);
 
 if (has("--diff-summary")) printDiffSummary("A", prev, manifest);
 console.log(
-  `[A] wrote docs/appendix/A.md + manifest (${items.length} items: ${familyCount} family / ${leafCount} leaf / ${fgCount} feature-gated)`,
+  `[A] wrote docs/appendix/A.md + manifest (${rows.length} items: family=${familyCount}, register: default=${defaultRegisterCount} / feature-gated=${fgCount} / —=${noRegisterCount})`,
 );
